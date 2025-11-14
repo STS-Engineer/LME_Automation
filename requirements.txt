@@ -1,0 +1,17 @@
+# --- Web Framework & Production Server ---
+Flask
+flasgger
+gunicorn
+
+# --- Scheduler  ---
+APScheduler
+
+# --- Database PostgreSQL ---
+psycopg2-binary
+
+# --- Web Scraping Stack ---
+Scrapy
+scrapy-playwright
+playwright
+parsel
+Twisted
