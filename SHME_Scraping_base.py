@@ -111,6 +111,9 @@ def save_prices_to_db(data, source_url=URL_BASE):
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Date actuelle pour price_date
+        current_date = datetime.now().date()
+        
         for product_name, price in data.items():
             if price is None:
                 logger.warning(f"⚠️  Prix manquant pour {product_name}, non enregistré")
@@ -123,8 +126,8 @@ def save_prices_to_db(data, source_url=URL_BASE):
             
             insert_query = """
                 INSERT INTO metal_prices 
-                (source_product_name, metal_type, price, currency, unit, source_url, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                (source_product_name, metal_type, price, currency, unit, source_url, price_date, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             """
             
             cursor.execute(insert_query, (
@@ -133,15 +136,14 @@ def save_prices_to_db(data, source_url=URL_BASE):
                 price,
                 'CNY',
                 'ton',
-                source_url
+                source_url,
+                current_date
             ))
-            
             inserted_count += 1
-            logger.info(f"   ✅ Enregistré: {product_name} = {price} CNY")
+            logger.info(f"   ✅ Enregistré: {product_name} = {price} CNY (date: {current_date})")
         
         conn.commit()
         logger.info(f"✅ {inserted_count} prix enregistrés dans la base de données")
-        
         return inserted_count
         
     except Exception as e:
@@ -612,10 +614,10 @@ def home():
     """
     return jsonify({
         "service": "API d'extraction des prix de métaux",
-        "version": "2.0",
+        "version": "2.1",
         "features": {
             "scraping": "Extraction depuis Shmet",
-            "database": "Enregistrement PostgreSQL",
+            "database": "Enregistrement PostgreSQL avec price_date",
             "scheduler": "Exécution quotidienne à 8h00"
         },
         "endpoints": {
@@ -628,7 +630,6 @@ def home():
             "/docs": "GET - Documentation"
         }
     })
-
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -654,7 +655,6 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
-
 @app.route("/targets", methods=["GET"])
 def get_targets():
     """
@@ -669,7 +669,6 @@ def get_targets():
         "count": len(TARGETS),
         "mapping": METAL_MAPPING
     })
-
 
 @app.route("/extract", methods=["POST"])
 def extract_prices():
@@ -689,7 +688,6 @@ def extract_prices():
         return jsonify(result), 200
     else:
         return jsonify(result), 500
-
 
 @app.route("/prices/latest", methods=["GET"])
 def get_latest_prices():
@@ -745,7 +743,6 @@ def get_latest_prices():
             "status": "error",
             "message": str(e)
         }), 500
-
 
 @app.route("/prices/history", methods=["GET"])
 def get_price_history():
@@ -820,7 +817,6 @@ def get_price_history():
             "message": str(e)
         }), 500
 
-
 @app.route("/sync/logs", methods=["GET"])
 def get_sync_logs():
     """
@@ -866,7 +862,6 @@ def get_sync_logs():
             "status": "error",
             "message": str(e)
         }), 500
-
 
 # ==============================
 # POINT D'ENTRÉE
