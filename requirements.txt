@@ -1,9 +1,9 @@
 # --- Web Framework & Production Server ---
-Flask==1.1.4
-flasgger
-gunicorn
+Flask==2.2.5
+flasgger==0.9.7
+gunicorn==23.0.0
 
-# --- Scheduler  ---
+# --- Scheduler  ---
 APScheduler
 
 # --- Database PostgreSQL ---
