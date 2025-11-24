@@ -15,3 +15,12 @@ scrapy-playwright
 playwright
 parsel
 Twisted
+
+# --- Async/Events ---
+asyncio
+
+# --- Logging helpers ---
+colorlog
+
+# --- Utils ---
+requests
