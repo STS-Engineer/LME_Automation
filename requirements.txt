@@ -1,5 +1,5 @@
 # --- Web Framework & Production Server ---
-Flask
+Flask==1.1.4
 flasgger
 gunicorn
 
