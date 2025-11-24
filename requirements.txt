@@ -1,25 +1,8 @@
-# --- Web Framework & Production Server ---
-Flask
+flask
 flasgger
-
-# --- Scheduler  ---
-APScheduler
-
-# --- Database PostgreSQL ---
-psycopg2-binary
-
-# --- Web Scraping Stack ---
-Scrapy
+scrapy
 scrapy-playwright
-playwright
+twisted
 parsel
-Twisted
-
-# --- Async/Events ---
-asyncio
-
-# --- Logging helpers ---
-colorlog
-
-# --- Utils ---
-requests
+psycopg2-binary
+apscheduler
