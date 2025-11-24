@@ -1,8 +1,8 @@
-flask
-flasgger
-scrapy
-scrapy-playwright
-twisted
-parsel
-psycopg2-binary
-apscheduler
+flask==2.1.3
+flasgger==0.9.7
+scrapy==2.11.1
+scrapy-playwright==0.0.30
+twisted==22.10.0
+parsel==1.8.1
+psycopg2-binary==2.9.9
+apscheduler==3.10.4
