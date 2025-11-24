@@ -1,7 +1,6 @@
 # --- Web Framework & Production Server ---
-Flask==2.2.5
-flasgger==0.9.5
-gunicorn==23.0.0
+Flask
+flasgger
 
 # --- Scheduler  ---
 APScheduler
