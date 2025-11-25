@@ -1,33 +1,25 @@
 #!/bin/bash
 
-# --- SECTION 0: System Dependencies (Must be run as root/sudo, often in Dockerfile) ---
-# NOTE: This section is for installing OS-level libraries needed to compile psycopg2.
-# It is typically run *before* the script, or in a Dockerfile's RUN command.
-# If your environment already has libpq-dev, skip this block.
+# --- ⚠️ IMPORTANT SYSTEM DEPENDENCY CHECK ⚠️ ---
+# The "undefined symbol" error is typically a C-library linkage issue.
+# This script assumes you are running on a Linux-based environment (like Azure App Service Linux).
+# Ensure system libraries required for psycopg2 (like libpq-dev) are installed 
+# in the underlying OS environment (e.g., in your Dockerfile or provisioning script).
+# Example for Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y libpq-dev python3-dev
+# ------------------------------------------------
 
-# echo "Installing system dependencies for psycopg2 (libpq-dev)..."
-# sudo apt-get update
-# sudo apt-get install -y libpq-dev python3-dev
-
-# -----------------------------------------------------------------------------------
-
-# 1. Force Uninstall/Reinstall of psycopg2
-# This targets the 'undefined symbol' error by ensuring a fresh build against the
-# currently active Python interpreter.
-echo "Cleaning and forcing reinstallation of psycopg2-binary..."
-
-# Use 'pip uninstall' multiple times to catch both 'psycopg2' and 'psycopg2-binary'
+# 1. Force Uninstall/Reinstall of psycopg2-binary
+# This ensures any previous broken installation is removed, and a fresh binary 
+# is installed before the main requirements batch run.
+echo "Cleaning and forcing reinstallation of psycopg2-binary to resolve potential C-library issues..."
 pip uninstall -y psycopg2-binary psycopg2
-
-# Reinstall the binary version (easiest way to avoid compile errors if system dependencies are missing)
 pip install psycopg2-binary
 
-# -----------------------------------------------------------------------------------
-
-# 2. Installation des autres dépendances (with force-reinstall)
-echo "Forcing installation of all other exact dependency versions..."
-# Use --no-deps to skip psycopg2 if it's already in requirements.txt, 
-# but installing everything with --force-reinstall is generally safer if the list is consistent.
+# 2. Installation des autres dépendances Python
+# Using --upgrade and --force-reinstall ensures all other packages from 
+# requirements.txt are installed cleanly, including the correct versions 
+# of scrapy, twisted, and playwright dependencies.
+echo "Forcing clean installation of all other exact dependency versions from requirements.txt..."
 pip install --upgrade --force-reinstall -r requirements.txt
 
 # 3. Installation du navigateur Playwright
@@ -37,4 +29,6 @@ python -m playwright install chromium --with-deps
 echo "Installation complete. Starting application..."
 
 # 4. Démarrage de l'application
-gunicorn --bind 0.0.0.0:8000 SHME_Scraping_base:app
+# Added --log-level debug and --error-logfile - to force Gunicorn to output 
+# detailed startup errors (like ImportError traceback) to the console/Azure Log Stream.
+gunicorn --bind 0.0.0.0:8000 SHME_Scraping_base:app --log-level debug --error-logfile -
