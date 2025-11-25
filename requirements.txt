@@ -6,5 +6,5 @@ scrapy==2.11.1
 scrapy-playwright==0.0.30
 twisted==22.10.0
 parsel==1.8.1
-psycopg2==2.9.9
+psycopg2-binary==2.9.9
 apscheduler==3.10.4
