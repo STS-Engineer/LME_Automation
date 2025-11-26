@@ -1,34 +1,28 @@
 #!/bin/bash
 
-# --- ⚠️ IMPORTANT SYSTEM DEPENDENCY CHECK ⚠️ ---
-# The "undefined symbol" error is typically a C-library linkage issue.
-# This script assumes you are running on a Linux-based environment (like Azure App Service Linux).
-# Ensure system libraries required for psycopg2 (like libpq-dev) are installed 
-# in the underlying OS environment (e.g., in your Dockerfile or provisioning script).
-# Example for Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y libpq-dev python3-dev
-# ------------------------------------------------
+PYTHON_EXEC="python3" # Tentez python3 comme alias plus générique
 
-# 1. Force Uninstall/Reinstall of psycopg2-binary
-# This ensures any previous broken installation is removed, and a fresh binary 
-# is installed before the main requirements batch run.
-echo "Cleaning and forcing reinstallation of psycopg2-binary to resolve potential C-library issues..."
-pip uninstall -y psycopg2-binary psycopg2
-pip install psycopg2-binary
+echo "========================================================"
+echo "-> 1/3. Installation/Mise à jour des dépendances Python (incluant flasgger)..."
+# Utiliser 'pip install' directement au lieu de 'python -m pip install' pour plus de robustesse sur les systèmes instables
+pip install --upgrade -r requirements.txt
+if [ $? -ne 0 ]; then
+    echo "❌ ERREUR FATALE: L'installation des dépendances Python (pip) a échoué. Cause probable: problème de librairie système."
+    exit 1
+fi
 
-# 2. Installation des autres dépendances Python
-# Using --upgrade and --force-reinstall ensures all other packages from 
-# requirements.txt are installed cleanly, including the correct versions 
-# of scrapy, twisted, and playwright dependencies.
-echo "Forcing clean installation of all other exact dependency versions from requirements.txt..."
-pip install --upgrade --force-reinstall -r requirements.txt
+echo "-> 2/3. Installation du navigateur Playwright Chromium..."
+# Utilisez l'alias python3 pour cette commande aussi
+$PYTHON_EXEC -m playwright install chromium --with-deps
+if [ $? -ne 0 ]; then
+    echo "❌ ERREUR FATALE: L'installation de Playwright Chromium a échoué."
+    exit 1
+fi
 
-# 3. Installation du navigateur Playwright
-echo "Installing Playwright Chromium browser dependencies..."
-python -m playwright install chromium --with-deps
+echo "--------------------------------------------------------"
+echo "✅ INSTALLATION TERMINÉE. Lancement de Gunicorn..."
 
-echo "Installation complete. Starting application..."
-
-# 4. Démarrage de l'application
-# Added --log-level debug and --error-logfile - to force Gunicorn to output 
-# detailed startup errors (like ImportError traceback) to the console/Azure Log Stream.
+# 3. Démarrage de l'application avec Gunicorn
+echo "-> 3/3. Lancement de Gunicorn: SHME_Scraping_base:app sur le port 8000..."
+# L'erreur de libpython pourrait toujours affecter le lancement de Gunicorn, mais nous tentons
 gunicorn --bind 0.0.0.0:8000 SHME_Scraping_base:app --log-level debug --error-logfile -
