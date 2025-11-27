@@ -646,7 +646,7 @@ scheduler = BackgroundScheduler()
 # MODIFICATION CLÉ: Changement de l'heure à 16h30
 scheduler.add_job(
     func=scheduled_scraping_job,
-    trigger=CronTrigger(hour=16, minute=27),  # Tous les jours à 16h30
+    trigger=CronTrigger(hour=16, minute=40),  # Tous les jours à 16h30
     id='daily_scraping',
     name='Extraction quotidienne des prix à 16h30',
     replace_existing=True
