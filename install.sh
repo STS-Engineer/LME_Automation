@@ -4,19 +4,25 @@ PYTHON_EXEC="python3" # Tentez python3 comme alias plus générique
 
 echo "========================================================"
 echo "-> 1/3. Installation/Mise à jour des dépendances Python (incluant flasgger)..."
-# Utiliser 'pip install' directement au lieu de 'python -m pip install' pour plus de robustesse sur les systèmes instables
+
+# --- MODIFICATION CLÉ CI-DESSOUS ---
+# 1. Installe les dépendances listées dans requirements.txt
+# 2. Installe ENSUITE les dépendances TLS requises par Twisted pour le support HTTPS
 pip install --upgrade -r requirements.txt
+pip install pyopenssl service_identity twisted[tls]
+# ------------------------------------
+
 if [ $? -ne 0 ]; then
-    echo "❌ ERREUR FATALE: L'installation des dépendances Python (pip) a échoué. Cause probable: problème de librairie système."
-    exit 1
+    echo "❌ ERREUR FATALE: L'installation des dépendances Python (pip) a échoué. Cause probable: problème de librairie système."
+    exit 1
 fi
 
 echo "-> 2/3. Installation du navigateur Playwright Chromium..."
 # Utilisez l'alias python3 pour cette commande aussi
 $PYTHON_EXEC -m playwright install chromium --with-deps
 if [ $? -ne 0 ]; then
-    echo "❌ ERREUR FATALE: L'installation de Playwright Chromium a échoué."
-    exit 1
+    echo "❌ ERREUR FATALE: L'installation de Playwright Chromium a échoué."
+    exit 1
 fi
 
 echo "--------------------------------------------------------"
