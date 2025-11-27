@@ -1,12 +1,25 @@
-# scraper_api.py — API Flask pour extraction des prix de métaux depuis Shmet
+# API Flask pour extraction des prix de métaux depuis Shmet
 """
 Installation requise:
-pip install flask flasgger scrapy scrapy-playwright twisted parsel psycopg2-binary apscheduler
+pip install flask flasgger scrapy scrapy-playwright twisted[tls] pyopenssl service_identity parsel psycopg2-binary apscheduler
 playwright install chromium
 """
 import sys
 import asyncio
 
+# ==============================
+# FIXATION 1: INSTALLATION DU REACTOR ASYNCIO
+# Twisted/Scrapy DOIT utiliser le reactor asyncio pour être compatible avec Playwright
+# Ceci DOIT être fait avant tout import de Twisted ou Scrapy
+# ==============================
+try:
+    from twisted.internet import asyncioreactor
+    asyncioreactor.install()
+    print("✅ Reactor asyncio de Twisted installé avec succès.")
+except Exception as e:
+    # Peut arriver si Twisted est déjà importé, mais l'ordre ici est correct.
+    print(f"⚠️  Erreur d'installation du reactor: {e}")
+    
 # Configuration asyncio pour Windows (seulement pour Python < 3.14)
 if sys.platform.startswith("win") and sys.version_info < (3, 14):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -25,7 +38,21 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import time
 
+# Import Scrapy APRES l'installation du reactor
+import scrapy
+from parsel import Selector
+# FIXATION 2: Import de CrawlerRunner au lieu de CrawlerProcess
+from scrapy.crawler import CrawlerRunner
+from scrapy import signals
+from scrapy.utils.log import configure_logging # Utile pour Scrapy
+from scrapy_playwright.page import PageMethod
+
+# ==============================
+# LE RESTE DU CODE EST IDENTIQUE JUSQU'À run_spider_in_thread
+# ==============================
+
 # Configuration du logging
+# ... (logging.basicConfig)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,13 +63,6 @@ logger = logging.getLogger(__name__)
 logger.info("="*80)
 logger.info("🚀 DÉMARRAGE DE L'APPLICATION")
 logger.info("="*80)
-
-# Import Scrapy (sans installer de reactor pour l'instant)
-import scrapy
-from parsel import Selector
-from scrapy.crawler import CrawlerProcess
-from scrapy import signals
-from scrapy_playwright.page import PageMethod
 
 logger.info("✅ Modules importés avec succès")
 
@@ -440,24 +460,54 @@ class ShmetSpider(scrapy.Spider):
 # ==============================
 # FONCTION D'EXÉCUTION DU SPIDER
 # ==============================
-def run_spider_in_thread(result_queue, timeout=60):
-    """Exécute le spider dans un thread séparé avec Twisted reactor."""
+def run_spider_in_thread(result_queue):
+    """Exécute le spider dans un thread séparé avec CrawlerRunner compatible asyncio."""
     try:
-        logger.info("🕷️  Démarrage du spider dans un thread séparé...")
+        # FIXATION 2 & 3: Utiliser CrawlerRunner dans l'event loop asyncio
         
-        # CrawlerProcess gère son propre reactor
-        process = CrawlerProcess(ShmetSpider.custom_settings)
-        process.crawl(ShmetSpider, result_queue=result_queue)
-        process.start()  # Bloque jusqu'à la fin
+        # 1. Obtenir l'event loop (normalement l'event loop asyncio/Twisted)
+        loop = asyncio.get_event_loop()
         
-        logger.info("✅ Spider terminé")
+        # 2. Configurer le logging de Scrapy pour le runner
+        configure_logging(ShmetSpider.custom_settings)
+        
+        # 3. Utiliser CrawlerRunner (ne démarre pas son propre reactor)
+        runner = CrawlerRunner(ShmetSpider.custom_settings)
+        
+        # 4. Préparer le crawl (une tâche asyncio/Twisted)
+        deferred = runner.crawl(ShmetSpider, result_queue=result_queue)
+        
+        # 5. Exécuter le crawl dans l'event loop
+        # Le runner utilise l'event loop de Twisted (qui est le reactor asyncio)
+        # On attend la fin du Deferred (le crawl)
+        
+        # On doit utiliser twisted.internet.defer.Deferred.asFuture pour l'intégrer avec l'event loop asyncio
+        # Comme on est DANS un thread, on doit démarrer et arrêter le reactor
+        
+        # Import local pour s'assurer que l'installation du reactor est faite
+        from twisted.internet import reactor
+        
+        # L'utilisation de Thread.start() dans scrape_and_save (juste après) 
+        # nécessite une approche différente pour ne pas bloquer le thread de Flask
+        
+        # Solution: Démarrer le reactor DANS ce thread, car le thread principal est utilisé par Flask
+        # C'est la solution standard pour intégrer Scrapy dans un environnement non-Twisted
+        
+        logger.info("🕷️  Démarrage du reactor et du spider dans le thread...")
+        
+        deferred.addBoth(lambda _: reactor.stop()) # Arrêter le reactor quand le crawl est fini
+        reactor.run() # Bloque jusqu'à ce que deferred soit terminé (à cause du .stop())
+        
+        logger.info("✅ Reactor arrêté et Spider terminé")
+        
     except Exception as e:
-        logger.error(f"❌ Erreur dans le thread du spider: {e}")
+        logger.error(f"❌ Erreur fatale dans le thread du spider: {e}")
+        # S'assurer de mettre une erreur dans la queue même en cas de crash critique
         result_queue.put({
             "data": {target: None for target in TARGETS},
             "url": URL_BASE,
             "timestamp": datetime.now().isoformat(),
-            "error": str(e)
+            "error": "Erreur critique du reactor ou du thread: " + str(e)
         })
 
 
@@ -482,20 +532,22 @@ def scrape_and_save(sync_type='manual'):
         result_queue = Queue()
         
         # Lancer le spider dans un thread séparé
+        # Le nouveau run_spider_in_thread gère maintenant le reactor.
         spider_thread = Thread(
             target=run_spider_in_thread,
-            args=(result_queue, 120),
+            args=(result_queue,),
             daemon=True
         )
         spider_thread.start()
         
         # Attendre le résultat avec timeout
+        timeout_duration = 120 # 2 minutes
         try:
-            result = result_queue.get(timeout=120)
+            result = result_queue.get(timeout=timeout_duration)
             logger.info("✅ Résultat reçu du spider")
         except:
             duration = time.time() - start_time
-            logger.error(f"⏱️  Timeout après 120s")
+            logger.error(f"⏱️  Timeout après {timeout_duration}s")
             log_sync_operation(sync_type, 'failed', 0, 'Timeout', duration)
             return {
                 "status": "error",
@@ -601,7 +653,7 @@ logger.info("⏰ Scheduler initialisé: extraction quotidienne à 8h00")
 
 
 # ==============================
-# ROUTES API
+# ROUTES API (IDENTIQUES)
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
