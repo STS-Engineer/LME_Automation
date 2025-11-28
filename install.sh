@@ -9,7 +9,7 @@ echo "-> 1/3. Installation/Mise à jour des dépendances Python (incluant flasgg
 # 1. Installe les dépendances listées dans requirements.txt
 # 2. Installe ENSUITE les dépendances TLS requises par Twisted pour le support HTTPS
 pip install --upgrade -r requirements.txt
-pip install pyopenssl service_identity twisted[tls]
+pip install pyopenssl service_identity twisted[tls] crochet
 # ------------------------------------
 
 if [ $? -ne 0 ]; then
