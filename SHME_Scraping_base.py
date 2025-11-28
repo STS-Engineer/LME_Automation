@@ -1,7 +1,7 @@
 # API Flask pour extraction des prix de métaux depuis Shmet
 """
 Installation requise:
-pip install flask flasgger scrapy scrapy-playwright twisted[tls] pyopenssl service_identity parsel psycopg2-binary apscheduler
+pip install flask flasgger scrapy scrapy-playwright twisted[tls] pyopenssl service_identity parsel psycopg2-binary apscheduler crochet
 playwright install chromium
 """
 import sys
@@ -41,12 +41,16 @@ import time
 # Import Scrapy APRES l'installation du reactor
 import scrapy
 from parsel import Selector
-# FIXATION 2: Import de CrawlerRunner au lieu de CrawlerProcess
 from scrapy.crawler import CrawlerRunner
 from scrapy import signals
-from scrapy.utils.log import configure_logging # Utile pour Scrapy
+from scrapy.utils.log import configure_logging  # (plus utilisé directement mais laissé au besoin)
 from scrapy_playwright.page import PageMethod
-from twisted.internet import reactor # Import du reactor nécessaire pour le run_spider_in_thread
+
+# Crochet pour intégrer Twisted proprement dans Flask
+from crochet import setup, wait_for, TimeoutError as CrochetTimeoutError
+
+# Initialiser Crochet (lance le reactor Twisted dans un thread dédié au besoin)
+setup()
 
 # ==============================
 # CONFIGURATION DU LOGGING
@@ -172,7 +176,6 @@ def save_prices_to_db(data, source_url=URL_BASE):
         raise
     finally:
         if conn:
-            # S'assurer que le curseur est fermé avant la connexion
             if 'cursor' in locals() and cursor:
                 cursor.close()
             conn.close()
@@ -467,55 +470,34 @@ class ShmetSpider(scrapy.Spider):
 
 
 # ==============================
-# FONCTION D'EXÉCUTION DU SPIDER
+# RUNNER SCRAPY + CROCHET
 # ==============================
-def run_spider_in_thread(result_queue):
-    """Exécute le spider dans un thread séparé avec CrawlerRunner compatible asyncio."""
-    try:
-        # FIXATION CRITIQUE: Créer un nouvel event loop pour ce thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        logger.info("✅ Event loop asyncio créé pour le thread")
-        
-        configure_logging(ShmetSpider.custom_settings)
-        
-        runner = CrawlerRunner(ShmetSpider.custom_settings)
-        
-        # Préparer le crawl (une tâche asyncio/Twisted)
-        deferred = runner.crawl(ShmetSpider, result_queue=result_queue)
-        
-        logger.info("🕷️  Démarrage du reactor et du spider dans le thread...")
-        
-        # Arrêter le reactor quand le crawl est fini
-        deferred.addBoth(lambda _: reactor.stop())
-        
-        # Bloque jusqu'à ce que deferred soit terminé
-        reactor.run(installSignalHandlers=False)
-        
-        logger.info("✅ Reactor arrêté et Spider terminé")
-        
-    except Exception as e:
-        logger.error(f"❌ Erreur fatale dans le thread du spider: {e}")
-        # S'assurer de mettre une erreur dans la queue même en cas de crash critique
-        result_queue.put({
-            "data": {target: None for target in TARGETS},
-            "url": URL_BASE,
-            "timestamp": datetime.now().isoformat(),
-            "error": "Erreur critique du reactor ou du thread: " + str(e)
-        })
-    finally:
-        # Nettoyer l'event loop après utilisation
-        try:
-            # Récupérer le loop créé dans ce thread
-            loop = asyncio.get_event_loop() 
-            if not loop.is_closed():
-                loop.close()
-            logger.info("🧹 Event loop fermé proprement")
-        except Exception as cleanup_error:
-            logger.warning(f"⚠️  Erreur lors du nettoyage de l'event loop: {cleanup_error}")
+# Runner global réutilisé pour chaque crawl
+runner = CrawlerRunner(ShmetSpider.custom_settings)
 
 
+@wait_for(timeout=120.0)  # timeout max 120s côté Flask
+def run_spider_blocking():
+    """
+    Lance le spider Shmet de façon BLOQUANTE du point de vue Flask,
+    grâce à Crochet. Le reactor Twisted tourne dans un thread dédié.
+    """
+    result_queue = Queue()
+
+    # Lancer le crawl (asynchrone côté Twisted)
+    d = runner.crawl(ShmetSpider, result_queue=result_queue)
+
+    # Une fois le crawl terminé, récupérer le résultat dans la queue
+    def _after_crawl(_):
+        return result_queue.get()
+
+    d.addCallback(_after_crawl)
+    return d
+
+
+# ==============================
+# FONCTION D'EXÉCUTION DU SPIDER + SAUVEGARDE
+# ==============================
 def scrape_and_save(sync_type='manual'):
     """
     Effectue le scraping et enregistre les données dans la base.
@@ -533,33 +515,21 @@ def scrape_and_save(sync_type='manual'):
     logger.info("="*80)
     
     try:
-        # Queue pour récupérer le résultat
-        result_queue = Queue()
-        
-        # Lancer le spider dans un thread séparé
-        spider_thread = Thread(
-            target=run_spider_in_thread,
-            args=(result_queue,),
-            daemon=True
-        )
-        spider_thread.start()
-        
-        # Attendre le résultat avec timeout
-        timeout_duration = 120 # 2 minutes
+        # Appel BLOQUANT via Crochet (Twisted tourne dans son thread)
         try:
-            result = result_queue.get(timeout=timeout_duration)
+            result = run_spider_blocking()
             logger.info("✅ Résultat reçu du spider")
-        except:
+        except CrochetTimeoutError:
             duration = time.time() - start_time
-            logger.error(f"⏱️  Timeout après {timeout_duration}s")
+            logger.error("⏱️  Timeout après 120s (Crochet)")
             log_sync_operation(sync_type, 'failed', 0, 'Timeout', duration)
             return {
                 "status": "error",
                 "message": "Timeout lors du scraping",
                 "sync_type": sync_type
             }
-        
-        # Enregistrer dans la base de données
+
+        # En cas d'erreur renvoyée par le spider
         if "error" in result:
             duration = time.time() - start_time
             log_sync_operation(sync_type, 'failed', 0, result.get("error"), duration)
@@ -617,7 +587,7 @@ def scrape_and_save(sync_type='manual'):
 # ==============================
 def scheduled_scraping_job():
     """Tâche planifiée pour l'extraction quotidienne."""
-    logger.info("⏰ Exécution de la tâche planifiée (16h30)")
+    logger.info("⏰ Exécution de la tâche planifiée (16h40)")
     scrape_and_save(sync_type='scheduled')
 
 
@@ -643,16 +613,15 @@ swagger = Swagger(app, config=swagger_config)
 
 # Initialiser le scheduler
 scheduler = BackgroundScheduler()
-# MODIFICATION CLÉ: Changement de l'heure à 16h30
 scheduler.add_job(
     func=scheduled_scraping_job,
-    trigger=CronTrigger(hour=16, minute=40),  # Tous les jours à 16h30
+    trigger=CronTrigger(hour=16, minute=40),  # Tous les jours à 16h40
     id='daily_scraping',
-    name='Extraction quotidienne des prix à 16h30',
+    name='Extraction quotidienne des prix à 16h40',
     replace_existing=True
 )
 scheduler.start()
-logger.info("⏰ Scheduler initialisé: extraction quotidienne à 16h30 (heure locale du serveur)")
+logger.info("⏰ Scheduler initialisé: extraction quotidienne à 16h40 (heure locale du serveur)")
 
 
 # ==============================
@@ -673,7 +642,7 @@ def home():
         "features": {
             "scraping": "Extraction depuis Shmet via Scrapy/Playwright",
             "database": "Enregistrement PostgreSQL (metal_prices, sync_logs)",
-            "scheduler": "Exécution quotidienne à 16h30"
+            "scheduler": "Exécution quotidienne à 16h40"
         },
         "endpoints": {
             "/extract": "POST - Extraire et enregistrer les prix",
@@ -685,6 +654,7 @@ def home():
             "/docs": "GET - Documentation"
         }
     })
+
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -710,6 +680,7 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
+
 @app.route("/targets", methods=["GET"])
 def get_targets():
     """
@@ -725,6 +696,7 @@ def get_targets():
         "mapping": METAL_MAPPING
     })
 
+
 @app.route("/extract", methods=["POST"])
 def extract_prices():
     """
@@ -736,13 +708,14 @@ def extract_prices():
       500:
         description: Erreur
     """
-    logger.info("🎯 Requête /extract reçue (manuelle)")
+    logger.info("🎯 Requête /extract reçue (manuelle/API)")
     result = scrape_and_save(sync_type='api')
     
-    if result["status"] == "success" or result["status"] == "partial":
+    if result["status"] in ("success", "partial"):
         return jsonify(result), 200
     else:
         return jsonify(result), 500
+
 
 @app.route("/prices/latest", methods=["GET"])
 def get_latest_prices():
@@ -801,6 +774,7 @@ def get_latest_prices():
             "message": str(e)
         }), 500
 
+
 @app.route("/prices/history", methods=["GET"])
 def get_price_history():
     """
@@ -832,29 +806,27 @@ def get_price_history():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        base_query = """
-            SELECT * FROM metal_prices 
-            WHERE created_at >= NOW() - INTERVAL '%s days'
-        """
-        params = [days]
-        
-        if metal_type:
-            base_query += " AND metal_type = %s "
-            params.append(metal_type)
-        
-        final_query = base_query + " ORDER BY created_at DESC LIMIT %s"
-        params.append(limit)
 
-        # Les paramètres doivent être passés sous forme de tuple ou de liste
-        # Pour les jours, il faut le convertir en chaîne pour la syntaxe PostgreSQL INTERVAL
+        # Utilisation d'un interval propre
+        interval_str = f"{days} days"
         
         if metal_type:
-             # Exécuter avec (days, metal_type, limit)
-            cursor.execute(final_query, (str(days), metal_type, limit))
+            query = """
+                SELECT * FROM metal_prices 
+                WHERE created_at >= NOW() - INTERVAL %s
+                  AND metal_type = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            cursor.execute(query, (interval_str, metal_type, limit))
         else:
-            # Exécuter avec (days, limit)
-            cursor.execute(final_query, (str(days), limit))
+            query = """
+                SELECT * FROM metal_prices 
+                WHERE created_at >= NOW() - INTERVAL %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            cursor.execute(query, (interval_str, limit))
         
         results = cursor.fetchall()
         
@@ -878,6 +850,7 @@ def get_price_history():
             "status": "error",
             "message": str(e)
         }), 500
+
 
 @app.route("/sync/logs", methods=["GET"])
 def get_sync_logs():
@@ -926,27 +899,18 @@ def get_sync_logs():
             "message": str(e)
         }), 500
 
+
 # ==============================
 # POINT D'ENTRÉE
 # ==============================
 if __name__ == "__main__":
-    # Assurer que l'event loop principal est disponible si nécessaire
-    try:
-        # Tenter d'obtenir le loop existant
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            pass
-    except RuntimeError:
-        # Si aucun loop n'existe, en créer un nouveau et le définir
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        
     logger.info("="*80)
     logger.info("🚀 DÉMARRAGE DU SERVEUR FLASK")
     logger.info(f"🌐 Accès à l'API: http://0.0.0.0:5000/health")
     logger.info("📊 Documentation: http://0.0.0.0:5000/docs")
     logger.info(f"🎯 {len(TARGETS)} produits suivis")
     logger.info("🗄️ Base de données: PostgreSQL (Azure)")
-    logger.info("⏰ Extraction quotidienne planifiée: 16h30 (heure locale du serveur)")
+    logger.info("⏰ Extraction quotidienne planifiée: 16h40 (heure locale du serveur)")
     logger.info("="*80)
     
     try:
