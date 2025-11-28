@@ -26,7 +26,7 @@ try:
     asyncioreactor.install()
 except Exception as e:
     # Le reactor pourrait être déjà installé si le processus est réutilisé (moins fréquent en prod)
-    pass 
+    pass
     
 from twisted.internet import reactor, defer
 
@@ -144,8 +144,8 @@ def save_prices_to_db(data, source_url=URL_BASE, price_datetime=None):
                 product_name, metal_type, price, 'CNY', 'ton', source_url, price_date, price_datetime
             ))
             inserted_count += 1
-            # logger.info(f"   ✅ {product_name} = {price} CNY (date: {price_datetime})")
-        
+            # logger.info(f"    ✅ {product_name} = {price} CNY (date: {price_datetime})")
+            
         conn.commit()
         logger.info(f"✅ {inserted_count} prix enregistrés avec date {price_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
         return inserted_count
@@ -223,7 +223,7 @@ def extract_from_dom(response: scrapy.http.Response):
         return data
         
     rows = parent_card[0].css("tr.el-table__row")
-    # logger.info(f"   📊 {len(rows)} lignes trouvées")
+    # logger.info(f"    📊 {len(rows)} lignes trouvées")
     
     for row in rows:
         name_el = row.css("td span.cell-name")
@@ -253,7 +253,7 @@ def extract_from_dom(response: scrapy.http.Response):
             for target in TARGETS:
                 if target.lower().strip() == name.lower().strip(): # Match exact ou proche
                     data[target] = price
-                    # logger.info(f"   ✅ {target} = {price}")
+                    # logger.info(f"    ✅ {target} = {price}")
                     break
         except ValueError:
             continue
@@ -490,7 +490,7 @@ def scrape_and_save(sync_type='manual', scheduled_datetime=None):
         
         logger.info("="*80)
         logger.info(f"✅ TERMINÉ ({duration:.2f}s) - {metals_updated}/{len(TARGETS)}")
-        logger.info(f"   📅 Date enregistrement: {scraping_datetime}")
+        logger.info(f"    📅 Date enregistrement: {scraping_datetime}")
         logger.info("="*80)
         
         return {
@@ -544,7 +544,11 @@ def scheduled_scraping_job():
 # ==============================
 app = Flask(__name__)
 
-# Configuration et initialisation de Swagger (inchangé)
+# Déterminer le HOST pour Swagger (CRUCIAL pour le déploiement)
+# On utilise la variable d'environnement ou le lien fourni par l'utilisateur
+DEPLOYED_HOST = os.environ.get('WEBSITE_HOSTNAME', 'api-exmetal.azurewebsites.net') 
+
+# Configuration et initialisation de Swagger
 swagger_config = {
     "headers": [],
     "specs": [{
@@ -566,7 +570,8 @@ swagger_template = {
         "version": "3.1-CORRECTED",
         "contact": {"name": "Support API"},
     },
-    "host": "localhost:5000",
+    # MISE À JOUR CRITIQUE: Utiliser le host déployé pour que Swagger UI fonctionne
+    "host": DEPLOYED_HOST, 
     "basePath": "/",
     "schemes": ["http", "https"],
 }
@@ -574,11 +579,23 @@ swagger_template = {
 swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 # ==============================
-# ROUTES API (inchangé)
+# ROUTES API
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
-    """... (documentation inchangée) ..."""
+    """
+    Accueil de l'API
+    ---
+    responses:
+      200:
+        description: Informations sur le service et les endpoints disponibles
+        schema:
+          type: object
+          properties:
+            service: {type: string}
+            version: {type: string}
+            endpoints: {type: object}
+    """
     return jsonify({
         "service": "API extraction prix métaux",
         "version": "3.1-CORRECTED",
@@ -589,13 +606,30 @@ def home():
             "/sync/logs": "GET - Logs",
             "/health": "GET - Santé",
             "/targets": "GET - Produits",
-            "/docs": "GET - Documentation"
+            "/docs": "GET - Documentation (Swagger UI)"
         }
     })
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """... (documentation inchangée) ..."""
+    """
+    Vérification de la santé du service
+    Vérifie la connexion à la base de données, l'état du reactor Twisted et du scheduler APScheduler.
+    ---
+    tags:
+      - Monitoring
+    responses:
+      200:
+        description: Statut du service
+        schema:
+          type: object
+          properties:
+            status: {type: string, description: "healthy ou unhealthy"}
+            database: {type: string, description: "connected ou disconnected"}
+            reactor: {type: string, description: "running ou starting"}
+            scheduler: {type: string, description: "running ou stopped"}
+            timestamp: {type: string, format: date-time}
+    """
     db_status = "unknown"
     try:
         conn = get_db_connection()
@@ -614,7 +648,21 @@ def health_check():
 
 @app.route("/targets", methods=["GET"])
 def get_targets():
-    """... (documentation inchangée) ..."""
+    """
+    Liste des produits et leur mapping interne
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Liste des produits ciblés pour l'extraction
+        schema:
+          type: object
+          properties:
+            targets: {type: array, items: {type: string}}
+            count: {type: integer}
+            mapping: {type: object, description: "Mapping du nom du produit à un type de métal générique"}
+    """
     return jsonify({
         "targets": TARGETS,
         "count": len(TARGETS),
@@ -623,7 +671,34 @@ def get_targets():
 
 @app.route("/extract", methods=["POST"])
 def extract_prices():
-    """... (documentation inchangée) ..."""
+    """
+    Déclenchement manuel de l'extraction
+    Lance la procédure de scraping des prix depuis Shmet et les enregistre en base de données.
+    ---
+    tags:
+      - Extraction
+    responses:
+      200:
+        description: Extraction lancée avec succès ou déjà en cours (warning)
+        schema:
+          type: object
+          properties:
+            status: {type: string, description: "success, partial, ou warning (si déjà en cours)"}
+            data: {type: object, description: "Prix extraits (clés = noms des produits)"}
+            metals_saved: {type: integer}
+            total_targets: {type: integer}
+            duration: {type: number}
+            sync_type: {type: string}
+            timestamp: {type: string, format: date-time}
+      500:
+        description: Erreur interne, timeout ou échec de la connexion/scraping
+        schema:
+          type: object
+          properties:
+            status: {type: string, description: "error"}
+            message: {type: string}
+            sync_type: {type: string}
+    """
     logger.info("🎯 /extract (manuel)")
     # Lancement du scraping
     result = scrape_and_save(sync_type='manual')
@@ -636,7 +711,37 @@ def extract_prices():
 
 @app.route("/prices/latest", methods=["GET"])
 def get_latest_prices():
-    """... (documentation inchangée) ..."""
+    """
+    Récupération des derniers prix
+    Récupère le prix le plus récent pour chaque type de métal, ou l'historique récent d'un type spécifique.
+    ---
+    tags:
+      - Prix
+    parameters:
+      - name: metal_type
+        in: query
+        type: string
+        enum: [copper, zinc, tin]
+        description: Filtre optionnel sur le type de métal (si absent, retourne les derniers de tous les types)
+    responses:
+      200:
+        description: Derniers prix enregistrés
+        schema:
+          type: object
+          properties:
+            status: {type: string}
+            count: {type: integer}
+            prices:
+              type: array
+              items:
+                type: object
+                properties:
+                  metal_type: {type: string}
+                  price: {type: number}
+                  created_at: {type: string}
+      500:
+        description: Erreur de base de données
+    """
     metal_type = request.args.get("metal_type")
     
     try:
@@ -648,7 +753,7 @@ def get_latest_prices():
             query = "SELECT * FROM metal_prices WHERE metal_type = %s ORDER BY created_at DESC LIMIT 10"
             cursor.execute(query, (metal_type,))
         else:
-            # Récupère la dernière entrée pour chaque type de métal
+            # Récupère la dernière entrée pour chaque type de métal (en utilisant DISTINCT ON)
             query = "SELECT DISTINCT ON (metal_type) * FROM metal_prices ORDER BY metal_type, created_at DESC"
             cursor.execute(query)
         
@@ -663,7 +768,44 @@ def get_latest_prices():
 
 @app.route("/prices/history", methods=["GET"])
 def get_price_history():
-    """... (documentation inchangée) ..."""
+    """
+    Récupération de l'historique des prix
+    Récupère les prix sur une période ou avec une limite spécifique.
+    ---
+    tags:
+      - Prix
+    parameters:
+      - name: metal_type
+        in: query
+        type: string
+        enum: [copper, zinc, tin]
+        description: Type de métal à filtrer
+      - name: days
+        in: query
+        type: integer
+        default: 7
+        description: Nombre de jours d'historique à inclure
+      - name: limit
+        in: query
+        type: integer
+        default: 100
+        description: Nombre maximum d'enregistrements à retourner
+    responses:
+      200:
+        description: Historique des prix filtré
+        schema:
+          type: object
+          properties:
+            status: {type: string}
+            count: {type: integer}
+            filters: {type: object}
+            history:
+              type: array
+              items:
+                type: object
+    500:
+      description: Erreur de base de données
+    """
     metal_type = request.args.get("metal_type")
     days = request.args.get("days", default=7, type=int)
     limit = request.args.get("limit", default=100, type=int)
@@ -695,7 +837,33 @@ def get_price_history():
 
 @app.route("/sync/logs", methods=["GET"])
 def get_sync_logs():
-    """... (documentation inchangée) ..."""
+    """
+    Récupération des logs de synchronisation
+    Affiche l'historique des tentatives de scraping (manuel ou planifié).
+    ---
+    tags:
+      - Monitoring
+    parameters:
+      - name: limit
+        in: query
+        type: integer
+        default: 50
+        description: Nombre maximum de logs à retourner
+    responses:
+      200:
+        description: Liste des logs de synchronisation
+        schema:
+          type: object
+          properties:
+            status: {type: string}
+            count: {type: integer}
+            logs:
+              type: array
+              items:
+                type: object
+    500:
+      description: Erreur de base de données
+    """
     limit = request.args.get("limit", default=50, type=int)
     
     try:
@@ -768,7 +936,7 @@ if __name__ == "__main__":
     logger.info("="*80)
     
     if initialize_app():
-        logger.info("📊 Documentation: http://localhost:5000/docs")
+        logger.info(f"📊 Documentation: http://{DEPLOYED_HOST}/docs (ou http://localhost:5000/docs en local)")
         logger.info(f"🎯 {len(TARGETS)} produits")
         logger.info("="*80)
         
