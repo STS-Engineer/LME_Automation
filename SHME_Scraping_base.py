@@ -46,13 +46,11 @@ from scrapy.crawler import CrawlerRunner
 from scrapy import signals
 from scrapy.utils.log import configure_logging # Utile pour Scrapy
 from scrapy_playwright.page import PageMethod
+from twisted.internet import reactor # Import du reactor nécessaire pour le run_spider_in_thread
 
 # ==============================
-# LE RESTE DU CODE EST IDENTIQUE JUSQU'À run_spider_in_thread
+# CONFIGURATION DU LOGGING
 # ==============================
-
-# Configuration du logging
-# ... (logging.basicConfig)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -69,6 +67,7 @@ logger.info("✅ Modules importés avec succès")
 # ==============================
 # CONFIGURATION BASE DE DONNÉES
 # ==============================
+# ATTENTION: Remplacer ces valeurs par des variables d'environnement en production
 DB_CONFIG = {
     "user": "administrationSTS",
     "password": "St$@0987",
@@ -160,7 +159,7 @@ def save_prices_to_db(data, source_url=URL_BASE):
                 current_date
             ))
             inserted_count += 1
-            logger.info(f"   ✅ Enregistré: {product_name} = {price} CNY (date: {current_date})")
+            logger.info(f"    ✅ Enregistré: {product_name} = {price} CNY (date: {current_date})")
         
         conn.commit()
         logger.info(f"✅ {inserted_count} prix enregistrés dans la base de données")
@@ -173,7 +172,9 @@ def save_prices_to_db(data, source_url=URL_BASE):
         raise
     finally:
         if conn:
-            cursor.close()
+            # S'assurer que le curseur est fermé avant la connexion
+            if 'cursor' in locals() and cursor:
+                cursor.close()
             conn.close()
             logger.info("🔒 Connexion à la base de données fermée")
 
@@ -217,7 +218,8 @@ def log_sync_operation(sync_type, status, metals_updated, error_message=None, du
             conn.rollback()
     finally:
         if conn:
-            cursor.close()
+            if 'cursor' in locals() and cursor:
+                cursor.close()
             conn.close()
 
 
@@ -236,14 +238,14 @@ def extract_from_dom(response: scrapy.http.Response):
     china_domestic_section = None
     for section in sections:
         title = section.xpath('string(.)').get("").strip()
-        logger.info(f"   Section trouvée: {title}")
+        logger.info(f"    Section trouvée: {title}")
         if "China Domestic Market Price" in title:
             china_domestic_section = section
-            logger.info(f"   ✅ Section cible trouvée: {title}")
+            logger.info(f"    ✅ Section cible trouvée: {title}")
             break
     
     if not china_domestic_section:
-        logger.warning("   ⚠️  Section 'China Domestic Market Price' non trouvée")
+        logger.warning("    ⚠️  Section 'China Domestic Market Price' non trouvée")
         return data
     
     # Remonter au conteneur parent contenant le tableau
@@ -251,7 +253,7 @@ def extract_from_dom(response: scrapy.http.Response):
     
     # Chercher les lignes du tableau dans cette section
     rows = parent_card.css("tr.el-table__row")
-    logger.info(f"   {len(rows)} lignes trouvées dans la section China Domestic Market")
+    logger.info(f"    {len(rows)} lignes trouvées dans la section China Domestic Market")
     
     for idx, row in enumerate(rows, 1):
         # Extraction du nom du produit
@@ -288,7 +290,7 @@ def extract_from_dom(response: scrapy.http.Response):
         name = name_el.xpath("string(.)").get("").strip()
         raw_value = val_el.xpath("string(.)").get("").strip()
         
-        logger.info(f"   Ligne {idx}: Produit='{name}' | Prix brut='{raw_value}'")
+        logger.info(f"    Ligne {idx}: Produit='{name}' | Prix brut='{raw_value}'")
         
         # Nettoyage et conversion
         clean_value = raw_value.replace(",", "")
@@ -309,10 +311,10 @@ def extract_from_dom(response: scrapy.http.Response):
                 # Match exact ou contient le nom complet
                 if target_normalized == name_normalized or target_normalized in name_normalized:
                     data[target] = price
-                    logger.info(f"   ✅ MATCH: {target} = {price}")
+                    logger.info(f"    ✅ MATCH: {target} = {price}")
                     break
         except ValueError as e:
-            logger.warning(f"   ⚠️  Erreur conversion: {e}")
+            logger.warning(f"    ⚠️  Erreur conversion: {e}")
             continue
     
     found = sum(1 for v in data.values() if v is not None)
@@ -330,6 +332,7 @@ def extract_from_json_scripts(response: scrapy.http.Response):
         if not script_text:
             continue
         
+        # Tente de trouver un objet ou un tableau JSON dans le script
         json_match = re.search(r'(\{.*\}|\[.*\])', script_text, flags=re.DOTALL)
         if not json_match:
             continue
@@ -356,17 +359,19 @@ def extract_from_json_scripts(response: scrapy.http.Response):
                                     try:
                                         price = float(str(current[field]).replace(",", ""))
                                         data[target] = price
-                                        logger.info(f"   ✅ {target} = {price}")
+                                        logger.info(f"    ✅ {target} = {price}")
                                         break
                                     except (ValueError, TypeError):
                                         pass
-                
-                stack.extend(current.values())
+                            
+                # Ajouter les valeurs des dictionnaires à la pile
+                stack.extend([v for v in current.values() if isinstance(v, (dict, list))])
             elif isinstance(current, list):
+                # Ajouter les éléments des listes à la pile
                 stack.extend(current)
     
     found = sum(1 for v in data.values() if v is not None)
-    logger.info(f"✅ {found}/{len(TARGETS)} produits extraits")
+    logger.info(f"✅ {found}/{len(TARGETS)} produits extraits (JSON fallback)")
     return data
 
 
@@ -406,8 +411,10 @@ class ShmetSpider(scrapy.Spider):
             meta={
                 "playwright": True,
                 "playwright_page_methods": [
-                    PageMethod("wait_for_selector", "tr.el-table__row", timeout=20000),
-                    PageMethod("wait_for_timeout", 2000),
+                    # Attendre que la table de prix soit chargée
+                    PageMethod("wait_for_selector", "tr.el-table__row", timeout=20000), 
+                    # Délai supplémentaire pour s'assurer que JS est stable
+                    PageMethod("wait_for_timeout", 2000), 
                 ],
                 "playwright_include_page": False,
             },
@@ -423,7 +430,7 @@ class ShmetSpider(scrapy.Spider):
         data = extract_from_dom(response)
         extraction_method = "dom"
         
-        # Fallback JSON si nécessaire
+        # Fallback JSON si nécessaire (si aucun prix n'a été trouvé par le DOM)
         if all(value is None for value in data.values()):
             logger.warning("⚠️  Passage au fallback JSON...")
             data = extract_from_json_scripts(response)
@@ -436,14 +443,16 @@ class ShmetSpider(scrapy.Spider):
             "method": extraction_method
         }
         
+        # Place le résultat dans la queue pour la fonction parente (scrape_and_save)
         if self.result_queue:
             self.result_queue.put(result)
         
+        # Scrapy doit yield quelque chose même si ce n'est pas utilisé
         yield result
     
     def errback(self, failure):
         """Gestion des erreurs."""
-        logger.error(f"❌ Erreur: {failure.value}")
+        logger.error(f"❌ Erreur Scrapy/Playwright: {failure.value}")
         result = {
             "data": {target: None for target in TARGETS},
             "url": URL_BASE,
@@ -463,40 +472,26 @@ class ShmetSpider(scrapy.Spider):
 def run_spider_in_thread(result_queue):
     """Exécute le spider dans un thread séparé avec CrawlerRunner compatible asyncio."""
     try:
-        # FIXATION 2 & 3: Utiliser CrawlerRunner dans l'event loop asyncio
+        # FIXATION CRITIQUE: Créer un nouvel event loop pour ce thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        # 1. Obtenir l'event loop (normalement l'event loop asyncio/Twisted)
-        loop = asyncio.get_event_loop()
+        logger.info("✅ Event loop asyncio créé pour le thread")
         
-        # 2. Configurer le logging de Scrapy pour le runner
         configure_logging(ShmetSpider.custom_settings)
         
-        # 3. Utiliser CrawlerRunner (ne démarre pas son propre reactor)
         runner = CrawlerRunner(ShmetSpider.custom_settings)
         
-        # 4. Préparer le crawl (une tâche asyncio/Twisted)
+        # Préparer le crawl (une tâche asyncio/Twisted)
         deferred = runner.crawl(ShmetSpider, result_queue=result_queue)
-        
-        # 5. Exécuter le crawl dans l'event loop
-        # Le runner utilise l'event loop de Twisted (qui est le reactor asyncio)
-        # On attend la fin du Deferred (le crawl)
-        
-        # On doit utiliser twisted.internet.defer.Deferred.asFuture pour l'intégrer avec l'event loop asyncio
-        # Comme on est DANS un thread, on doit démarrer et arrêter le reactor
-        
-        # Import local pour s'assurer que l'installation du reactor est faite
-        from twisted.internet import reactor
-        
-        # L'utilisation de Thread.start() dans scrape_and_save (juste après) 
-        # nécessite une approche différente pour ne pas bloquer le thread de Flask
-        
-        # Solution: Démarrer le reactor DANS ce thread, car le thread principal est utilisé par Flask
-        # C'est la solution standard pour intégrer Scrapy dans un environnement non-Twisted
         
         logger.info("🕷️  Démarrage du reactor et du spider dans le thread...")
         
-        deferred.addBoth(lambda _: reactor.stop()) # Arrêter le reactor quand le crawl est fini
-        reactor.run() # Bloque jusqu'à ce que deferred soit terminé (à cause du .stop())
+        # Arrêter le reactor quand le crawl est fini
+        deferred.addBoth(lambda _: reactor.stop())
+        
+        # Bloque jusqu'à ce que deferred soit terminé
+        reactor.run(installSignalHandlers=False)
         
         logger.info("✅ Reactor arrêté et Spider terminé")
         
@@ -509,6 +504,16 @@ def run_spider_in_thread(result_queue):
             "timestamp": datetime.now().isoformat(),
             "error": "Erreur critique du reactor ou du thread: " + str(e)
         })
+    finally:
+        # Nettoyer l'event loop après utilisation
+        try:
+            # Récupérer le loop créé dans ce thread
+            loop = asyncio.get_event_loop() 
+            if not loop.is_closed():
+                loop.close()
+            logger.info("🧹 Event loop fermé proprement")
+        except Exception as cleanup_error:
+            logger.warning(f"⚠️  Erreur lors du nettoyage de l'event loop: {cleanup_error}")
 
 
 def scrape_and_save(sync_type='manual'):
@@ -532,7 +537,6 @@ def scrape_and_save(sync_type='manual'):
         result_queue = Queue()
         
         # Lancer le spider dans un thread séparé
-        # Le nouveau run_spider_in_thread gère maintenant le reactor.
         spider_thread = Thread(
             target=run_spider_in_thread,
             args=(result_queue,),
@@ -582,11 +586,11 @@ def scrape_and_save(sync_type='manual'):
         
         logger.info("="*80)
         logger.info(f"✅ EXTRACTION TERMINÉE ({duration:.2f}s)")
-        logger.info(f"   Métaux mis à jour: {metals_updated}/{len(TARGETS)}")
+        logger.info(f"    Métaux mis à jour: {metals_updated}/{len(TARGETS)}")
         logger.info("="*80)
         
         return {
-            "status": "success",
+            "status": status,
             "data": data,
             "metals_saved": metals_updated,
             "total_targets": len(TARGETS),
@@ -598,8 +602,6 @@ def scrape_and_save(sync_type='manual'):
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"❌ Erreur globale: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         
         log_sync_operation(sync_type, 'failed', 0, str(e), duration)
         
@@ -615,7 +617,7 @@ def scrape_and_save(sync_type='manual'):
 # ==============================
 def scheduled_scraping_job():
     """Tâche planifiée pour l'extraction quotidienne."""
-    logger.info("⏰ Exécution de la tâche planifiée (8h00)")
+    logger.info("⏰ Exécution de la tâche planifiée (16h30)")
     scrape_and_save(sync_type='scheduled')
 
 
@@ -641,19 +643,20 @@ swagger = Swagger(app, config=swagger_config)
 
 # Initialiser le scheduler
 scheduler = BackgroundScheduler()
+# MODIFICATION CLÉ: Changement de l'heure à 16h30
 scheduler.add_job(
     func=scheduled_scraping_job,
-    trigger=CronTrigger(hour=8, minute=0),  # Tous les jours à 8h00
+    trigger=CronTrigger(hour=16, minute=40),  # Tous les jours à 16h30
     id='daily_scraping',
-    name='Extraction quotidienne des prix à 8h00',
+    name='Extraction quotidienne des prix à 16h30',
     replace_existing=True
 )
 scheduler.start()
-logger.info("⏰ Scheduler initialisé: extraction quotidienne à 8h00")
+logger.info("⏰ Scheduler initialisé: extraction quotidienne à 16h30 (heure locale du serveur)")
 
 
 # ==============================
-# ROUTES API (IDENTIQUES)
+# ROUTES API
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
@@ -666,11 +669,11 @@ def home():
     """
     return jsonify({
         "service": "API d'extraction des prix de métaux",
-        "version": "2.1",
+        "version": "2.3",
         "features": {
-            "scraping": "Extraction depuis Shmet",
-            "database": "Enregistrement PostgreSQL avec price_date",
-            "scheduler": "Exécution quotidienne à 8h00"
+            "scraping": "Extraction depuis Shmet via Scrapy/Playwright",
+            "database": "Enregistrement PostgreSQL (metal_prices, sync_logs)",
+            "scheduler": "Exécution quotidienne à 16h30"
         },
         "endpoints": {
             "/extract": "POST - Extraire et enregistrer les prix",
@@ -734,9 +737,9 @@ def extract_prices():
         description: Erreur
     """
     logger.info("🎯 Requête /extract reçue (manuelle)")
-    result = scrape_and_save(sync_type='manual')
+    result = scrape_and_save(sync_type='api')
     
-    if result["status"] == "success":
+    if result["status"] == "success" or result["status"] == "partial":
         return jsonify(result), 200
     else:
         return jsonify(result), 500
@@ -764,6 +767,7 @@ def get_latest_prices():
         
         if metal_type:
             query = """
+                -- Sélectionne les 10 dernières entrées pour un type de métal
                 SELECT * FROM metal_prices 
                 WHERE metal_type = %s
                 ORDER BY created_at DESC 
@@ -772,6 +776,7 @@ def get_latest_prices():
             cursor.execute(query, (metal_type,))
         else:
             query = """
+                -- Sélectionne le prix le plus récent pour chaque type de métal
                 SELECT DISTINCT ON (metal_type) *
                 FROM metal_prices
                 ORDER BY metal_type, created_at DESC
@@ -828,23 +833,28 @@ def get_price_history():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        base_query = """
+            SELECT * FROM metal_prices 
+            WHERE created_at >= NOW() - INTERVAL '%s days'
+        """
+        params = [days]
+        
         if metal_type:
-            query = """
-                SELECT * FROM metal_prices 
-                WHERE metal_type = %s 
-                AND created_at >= NOW() - INTERVAL '%s days'
-                ORDER BY created_at DESC 
-                LIMIT %s
-            """
-            cursor.execute(query, (metal_type, days, limit))
+            base_query += " AND metal_type = %s "
+            params.append(metal_type)
+        
+        final_query = base_query + " ORDER BY created_at DESC LIMIT %s"
+        params.append(limit)
+
+        # Les paramètres doivent être passés sous forme de tuple ou de liste
+        # Pour les jours, il faut le convertir en chaîne pour la syntaxe PostgreSQL INTERVAL
+        
+        if metal_type:
+             # Exécuter avec (days, metal_type, limit)
+            cursor.execute(final_query, (str(days), metal_type, limit))
         else:
-            query = """
-                SELECT * FROM metal_prices 
-                WHERE created_at >= NOW() - INTERVAL '%s days'
-                ORDER BY created_at DESC 
-                LIMIT %s
-            """
-            cursor.execute(query, (days, limit))
+            # Exécuter avec (days, limit)
+            cursor.execute(final_query, (str(days), limit))
         
         results = cursor.fetchall()
         
@@ -905,6 +915,7 @@ def get_sync_logs():
         return jsonify({
             "status": "success",
             "count": len(results),
+            "limit": limit,
             "logs": results
         }), 200
         
@@ -919,24 +930,41 @@ def get_sync_logs():
 # POINT D'ENTRÉE
 # ==============================
 if __name__ == "__main__":
+    # Assurer que l'event loop principal est disponible si nécessaire
+    try:
+        # Tenter d'obtenir le loop existant
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            pass
+    except RuntimeError:
+        # Si aucun loop n'existe, en créer un nouveau et le définir
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        
     logger.info("="*80)
-    logger.info("🚀 DÉMARRAGE DU SERVEUR")
-    logger.info("📊 Documentation: http://localhost:5000/docs")
+    logger.info("🚀 DÉMARRAGE DU SERVEUR FLASK")
+    logger.info(f"🌐 Accès à l'API: http://0.0.0.0:5000/health")
+    logger.info("📊 Documentation: http://0.0.0.0:5000/docs")
     logger.info(f"🎯 {len(TARGETS)} produits suivis")
-    logger.info("🗄️  Base de données: PostgreSQL (Azure)")
-    logger.info("⏰ Extraction quotidienne: 8h00 du matin")
+    logger.info("🗄️ Base de données: PostgreSQL (Azure)")
+    logger.info("⏰ Extraction quotidienne planifiée: 16h30 (heure locale du serveur)")
     logger.info("="*80)
     
     try:
+        # Lancer l'application Flask
         app.run(
             host="0.0.0.0",
             port=5000,
             debug=False,
-            threaded=True
+            threaded=True 
         )
     except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
-        logger.info("🛑 Arrêt du scheduler")
+        # Arrêter le scheduler proprement lorsque l'application est interrompue
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("🛑 Arrêt du scheduler")
+        logger.info("👋 Arrêt de l'application")
     except Exception as e:
-        logger.error(f"❌ Erreur fatale: {e}")
+        logger.error(f"❌ Erreur fatale au lancement de l'API: {e}")
+        if scheduler.running:
+            scheduler.shutdown()
         raise
