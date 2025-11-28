@@ -615,7 +615,7 @@ swagger = Swagger(app, config=swagger_config)
 scheduler = BackgroundScheduler()
 scheduler.add_job(
     func=scheduled_scraping_job,
-    trigger=CronTrigger(hour=16, minute=40),  # Tous les jours à 16h40
+    trigger=CronTrigger(hour=15, minute=00),  # Tous les jours à 16h40
     id='daily_scraping',
     name='Extraction quotidienne des prix à 16h40',
     replace_existing=True
