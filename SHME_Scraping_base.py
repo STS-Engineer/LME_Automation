@@ -542,7 +542,22 @@ swagger_config = {
     "specs_route": "/docs"
 }
 
-swagger = Swagger(app, config=swagger_config)
+swagger_template = {
+    "swagger": "2.0",
+    "info": {
+        "title": "API Extraction Prix Métaux",
+        "description": "API pour extraire et gérer les prix des métaux depuis Shmet",
+        "version": "3.1",
+        "contact": {
+            "name": "Support API",
+        }
+    },
+    "host": "localhost:5000",
+    "basePath": "/",
+    "schemes": ["http", "https"],
+}
+
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 # Scheduler - sera démarré après le reactor
 scheduler = None
@@ -553,6 +568,26 @@ scheduler = None
 # ==============================
 @app.route("/", methods=["GET"])
 def home():
+    """
+    Page d'accueil de l'API
+    ---
+    tags:
+      - Info
+    responses:
+      200:
+        description: Informations sur l'API
+        schema:
+          type: object
+          properties:
+            service:
+              type: string
+              example: "API extraction prix métaux"
+            version:
+              type: string
+              example: "3.1-SCHEDULER-STABLE"
+            endpoints:
+              type: object
+    """
     return jsonify({
         "service": "API extraction prix métaux",
         "version": "3.1-SCHEDULER-STABLE",
@@ -569,6 +604,33 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health_check():
+    """
+    Vérifier la santé de l'API
+    ---
+    tags:
+      - Monitoring
+    responses:
+      200:
+        description: État de santé de l'API
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "healthy"
+            database:
+              type: string
+              example: "connected"
+            reactor:
+              type: string
+              example: "running"
+            scheduler:
+              type: string
+              example: "running"
+            timestamp:
+              type: string
+              example: "2024-01-15T09:10:00"
+    """
     db_status = "unknown"
     try:
         conn = get_db_connection()
@@ -587,6 +649,28 @@ def health_check():
 
 @app.route("/targets", methods=["GET"])
 def get_targets():
+    """
+    Liste des produits suivis
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Liste des produits métaux suivis
+        schema:
+          type: object
+          properties:
+            targets:
+              type: array
+              items:
+                type: string
+              example: ["Cu cathode 1#", "Zn ingot 0#, Shanghai"]
+            count:
+              type: integer
+              example: 3
+            mapping:
+              type: object
+    """
     return jsonify({
         "targets": TARGETS,
         "count": len(TARGETS),
@@ -595,6 +679,49 @@ def get_targets():
 
 @app.route("/extract", methods=["POST"])
 def extract_prices():
+    """
+    Lancer une extraction manuelle des prix
+    ---
+    tags:
+      - Scraping
+    responses:
+      200:
+        description: Extraction réussie
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "success"
+            data:
+              type: object
+            metals_saved:
+              type: integer
+              example: 3
+            total_targets:
+              type: integer
+              example: 3
+            duration:
+              type: number
+              example: 45.23
+            sync_type:
+              type: string
+              example: "manual"
+            timestamp:
+              type: string
+      500:
+        description: Erreur lors de l'extraction
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "error"
+            message:
+              type: string
+            sync_type:
+              type: string
+    """
     logger.info("🎯 /extract (manuel)")
     result = scrape_and_save(sync_type='manual')
     
@@ -605,6 +732,54 @@ def extract_prices():
 
 @app.route("/prices/latest", methods=["GET"])
 def get_latest_prices():
+    """
+    Obtenir les derniers prix enregistrés
+    ---
+    tags:
+      - Prix
+    parameters:
+      - name: metal_type
+        in: query
+        type: string
+        required: false
+        description: Filtrer par type de métal (copper, zinc, tin)
+        enum: [copper, zinc, tin]
+    responses:
+      200:
+        description: Derniers prix disponibles
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "success"
+            count:
+              type: integer
+              example: 3
+            prices:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  source_product_name:
+                    type: string
+                  metal_type:
+                    type: string
+                  price:
+                    type: number
+                  currency:
+                    type: string
+                  unit:
+                    type: string
+                  price_date:
+                    type: string
+                  created_at:
+                    type: string
+      500:
+        description: Erreur serveur
+    """
     metal_type = request.args.get("metal_type")
     
     try:
@@ -629,6 +804,50 @@ def get_latest_prices():
 
 @app.route("/prices/history", methods=["GET"])
 def get_price_history():
+    """
+    Obtenir l'historique des prix
+    ---
+    tags:
+      - Prix
+    parameters:
+      - name: metal_type
+        in: query
+        type: string
+        required: false
+        description: Filtrer par type de métal
+        enum: [copper, zinc, tin]
+      - name: days
+        in: query
+        type: integer
+        required: false
+        default: 7
+        description: Nombre de jours d'historique
+      - name: limit
+        in: query
+        type: integer
+        required: false
+        default: 100
+        description: Nombre maximum de résultats
+    responses:
+      200:
+        description: Historique des prix
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "success"
+            count:
+              type: integer
+            filters:
+              type: object
+            history:
+              type: array
+              items:
+                type: object
+      500:
+        description: Erreur serveur
+    """
     metal_type = request.args.get("metal_type")
     days = request.args.get("days", default=7, type=int)
     limit = request.args.get("limit", default=100, type=int)
@@ -660,6 +879,53 @@ def get_price_history():
 
 @app.route("/sync/logs", methods=["GET"])
 def get_sync_logs():
+    """
+    Obtenir les logs de synchronisation
+    ---
+    tags:
+      - Monitoring
+    parameters:
+      - name: limit
+        in: query
+        type: integer
+        required: false
+        default: 50
+        description: Nombre de logs à retourner
+    responses:
+      200:
+        description: Logs de synchronisation
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: "success"
+            count:
+              type: integer
+            logs:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  sync_type:
+                    type: string
+                    enum: [manual, scheduled, api]
+                  status:
+                    type: string
+                    enum: [success, partial, failed]
+                  metals_updated:
+                    type: integer
+                  error_message:
+                    type: string
+                  duration_seconds:
+                    type: number
+                  created_at:
+                    type: string
+      500:
+        description: Erreur serveur
+    """
     limit = request.args.get("limit", default=50, type=int)
     
     try:
