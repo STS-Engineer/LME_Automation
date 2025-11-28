@@ -31,4 +31,4 @@ echo "✅ INSTALLATION TERMINÉE. Lancement de Gunicorn..."
 # 3. Démarrage de l'application avec Gunicorn
 echo "-> 3/3. Lancement de Gunicorn: SHME_Scraping_base:app sur le port 8000..."
 # L'erreur de libpython pourrait toujours affecter le lancement de Gunicorn, mais nous tentons
-gunicorn --bind 0.0.0.0:8000 SHME_Scraping_base:app --log-level debug --error-logfile -
+gunicorn --bind 0.0.0.0 --timeout 300 SHME_Scraping_base:app --preload
